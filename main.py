@@ -1,73 +1,104 @@
-import torch
-from torch import nn
-import random
-import matplotlib.pyplot as plt
+from __future__ import annotations
 
-# Define the neural network
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.fc1 = nn.Linear(10, 55)
-        self.fc2 = nn.Linear(55, 20)
-        self.fc3 = nn.Linear(20, 1)
+import argparse
+from pathlib import Path
 
-    def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = torch.sigmoid(self.fc3(x))
-        return x
+from neuroboxing import (
+    ActorCritic,
+    FighterProfile,
+    HeuristicAgent,
+    PolicyAgent,
+    TrainingConfig,
+    evaluate_policy,
+    load_policy,
+    plot_match,
+    save_policy,
+    set_global_seed,
+    simulate_match,
+    train_self_play,
+)
 
-# Initialize the network
-net = Net()
 
-# Print the network architecture
-print(net)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Train and evaluate a neural boxing policy with masked PPO self-play."
+    )
+    parser.add_argument("--episodes", type=int, default=320, help="Self-play training episodes.")
+    parser.add_argument(
+        "--eval-matches", type=int, default=100, help="Matches against the tactical baseline."
+    )
+    parser.add_argument("--seed", type=int, default=7, help="Reproducibility seed.")
+    parser.add_argument(
+        "--max-exchanges", type=int, default=60, help="Maximum exchanges in a match."
+    )
+    parser.add_argument(
+        "--plot", type=Path, default=Path("boxing_match.png"), help="Showcase plot path."
+    )
+    parser.add_argument(
+        "--model-out", type=Path, default=Path("neuroboxer.pt"), help="Trained model path."
+    )
+    parser.add_argument(
+        "--load-model", type=Path, help="Load a saved policy instead of training a new one."
+    )
+    return parser.parse_args()
 
-# Count the number of parameters
-num_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
-print(f"The network has {num_params} parameters.")
 
-# Define the boxers
-boxer1 = {"name": "Boxer 1", "health": 100}
-boxer2 = {"name": "Boxer 2", "health": 100}
+def main() -> None:
+    args = parse_args()
+    set_global_seed(args.seed)
 
-# Define the number of rounds
-rounds = 10
-
-# Prepare a list to store the health of each boxer after each round
-health_history = {"Boxer 1": [100], "Boxer 2": [100]}
-
-# Simulate the match
-for round in range(rounds):
-    # Boxer 1's attack
-    attack = random.randint(1, 20)
-    boxer2["health"] -= attack
-
-    # Check if Boxer 2 has been knocked out
-    if boxer2["health"] <= 0:
-        health_history["Boxer 2"].append(0)
-        break
+    if args.load_model:
+        policy = load_policy(args.load_model)
+        print(f"Loaded policy from {args.load_model}")
     else:
-        health_history["Boxer 2"].append(boxer2["health"])
+        policy = ActorCritic()
+        config = TrainingConfig(
+            episodes=args.episodes,
+            max_exchanges=args.max_exchanges,
+        )
 
-    # Boxer 2's attack
-    attack = random.randint(1, 20)
-    boxer1["health"] -= attack
+        def report(episode: int, metrics: dict[str, float]) -> None:
+            print(
+                f"Episode {episode:>4}/{config.episodes}: "
+                f"return={metrics['mean_return']:+.3f} "
+                f"policy_loss={metrics['policy_loss']:+.3f} "
+                f"entropy={metrics['entropy']:.3f}"
+            )
 
-    # Check if Boxer 1 has been knocked out
-    if boxer1["health"] <= 0:
-        health_history["Boxer 1"].append(0)
-        break
-    else:
-        health_history["Boxer 1"].append(boxer1["health"])
+        print(
+            f"Training {sum(parameter.numel() for parameter in policy.parameters()):,} "
+            "parameters with masked PPO self-play..."
+        )
+        train_self_play(policy, config=config, seed=args.seed, progress_callback=report)
+        save_policy(policy, args.model_out)
+        print(f"Saved policy to {args.model_out}")
 
-# Plot the health history
-plt.figure(figsize=(10, 6))
-plt.plot(health_history["Boxer 1"], label="Boxer 1")
-plt.plot(health_history["Boxer 2"], label="Boxer 2")
-plt.xlabel("Round")
-plt.ylabel("Health")
-plt.title("Health of Boxers Over Time")
-plt.legend()
-plt.grid(True)
-plt.show()
+    evaluation = evaluate_policy(
+        policy,
+        episodes=args.eval_matches,
+        seed=args.seed + 10_000,
+        max_exchanges=args.max_exchanges,
+    )
+    print(
+        "Evaluation vs tactical baseline: "
+        f"{evaluation.wins} wins, {evaluation.draws} draws, "
+        f"{evaluation.losses} losses ({evaluation.score_rate:.1%} score rate)"
+    )
+
+    showcase = simulate_match(
+        PolicyAgent(policy, deterministic=True),
+        HeuristicAgent(seed=args.seed + 20_000),
+        profiles=(
+            FighterProfile("NeuroBoxer"),
+            FighterProfile("Tactical Baseline"),
+        ),
+        seed=args.seed + 30_000,
+        max_exchanges=args.max_exchanges,
+    )
+    print(showcase.summary())
+    plot_match(showcase, args.plot)
+    print(f"Saved showcase plot to {args.plot}")
+
+
+if __name__ == "__main__":
+    main()
