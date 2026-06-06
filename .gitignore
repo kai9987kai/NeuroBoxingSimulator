@@ -1,0 +1,6 @@
+__pycache__/
+.pytest_cache/
+.verification/
+*.py[cod]
+boxing_match.png
+neuroboxer.pt

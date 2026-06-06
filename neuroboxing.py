@@ -345,6 +345,8 @@ class ActorCritic(nn.Module):
         hidden_size: int = 96,
     ) -> None:
         super().__init__()
+        self.observation_size = observation_size
+        self.hidden_size = hidden_size
         self.backbone = nn.Sequential(
             nn.Linear(observation_size, hidden_size),
             nn.Tanh(),
@@ -672,7 +674,9 @@ def _ppo_update(
         [item for episode in episodes for item in episode.returns],
         dtype=torch.float32,
     )
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    advantages = (advantages - advantages.mean()) / (
+        advantages.std(unbiased=False) + 1e-8
+    )
 
     metric_totals = {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
     update_count = 0
@@ -687,7 +691,9 @@ def _ppo_update(
                 masks[indices],
             )
             new_log_probabilities = distribution.log_prob(actions[indices])
-            probability_ratio = (new_log_probabilities - old_log_probabilities[indices]).exp()
+            probability_ratio = (
+                new_log_probabilities - old_log_probabilities[indices]
+            ).exp()
             unclipped = probability_ratio * advantages[indices]
             clipped = probability_ratio.clamp(
                 1.0 - config.clip_ratio,
@@ -770,7 +776,8 @@ def save_policy(policy: ActorCritic, path: str | Path) -> None:
     torch.save(
         {
             "format_version": 1,
-            "observation_size": BoxingEnv.OBSERVATION_SIZE,
+            "observation_size": policy.observation_size,
+            "hidden_size": policy.hidden_size,
             "action_count": ACTION_COUNT,
             "state_dict": policy.state_dict(),
         },
@@ -784,7 +791,10 @@ def load_policy(path: str | Path) -> ActorCritic:
         raise ValueError("Model observation size is incompatible with this simulator")
     if checkpoint.get("action_count") != ACTION_COUNT:
         raise ValueError("Model action count is incompatible with this simulator")
-    policy = ActorCritic()
+    policy = ActorCritic(
+        observation_size=checkpoint["observation_size"],
+        hidden_size=checkpoint["hidden_size"],
+    )
     policy.load_state_dict(checkpoint["state_dict"])
     policy.eval()
     return policy

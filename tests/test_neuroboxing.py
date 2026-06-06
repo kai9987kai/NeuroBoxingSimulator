@@ -93,11 +93,12 @@ def test_policy_never_samples_a_masked_action() -> None:
 
 def test_policy_round_trip(tmp_path) -> None:
     path = tmp_path / "policy.pt"
-    policy = ActorCritic()
+    policy = ActorCritic(hidden_size=32)
     save_policy(policy, path)
 
     loaded = load_policy(path)
 
+    assert loaded.hidden_size == 32
     for expected, actual in zip(policy.parameters(), loaded.parameters()):
         assert torch.equal(expected, actual)
 
@@ -119,5 +120,23 @@ def test_short_training_run_produces_finite_metrics() -> None:
     assert all(
         math.isfinite(metrics[key])
         for metrics in history
+        for key in ("mean_return", "policy_loss", "value_loss", "entropy")
+    )
+
+
+def test_single_transition_training_stays_finite() -> None:
+    policy = ActorCritic()
+    config = TrainingConfig(
+        episodes=1,
+        batch_episodes=1,
+        ppo_epochs=1,
+        max_exchanges=1,
+    )
+
+    history = train_self_play(policy, config=config, seed=50)
+
+    assert len(history) == 1
+    assert all(
+        math.isfinite(history[0][key])
         for key in ("mean_return", "policy_loss", "value_loss", "entropy")
     )
